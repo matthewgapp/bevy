@@ -26,7 +26,8 @@ enum RequestState {
 ///
 /// Construct this with [`WindowPresentationFeedbackRequest::new`] and attach it to the target
 /// window entity before the corresponding scene state is extracted. The paired receiver is the
-/// only way to consume the result.
+/// only way to consume the result. After completion the component is inert and ordinary untracked
+/// frames may continue; replace it with a fresh request to track another exact presentation.
 #[derive(Component, Debug)]
 pub struct WindowPresentationFeedbackRequest {
     serial: u64,
@@ -51,8 +52,15 @@ impl WindowPresentationFeedbackRequest {
         self.serial
     }
 
-    pub(super) fn is_requested(&self) -> bool {
-        matches!(*self.state.lock().unwrap(), RequestState::Requested)
+    pub(super) fn is_presenting(&self) -> bool {
+        matches!(*self.state.lock().unwrap(), RequestState::Presenting)
+    }
+
+    pub(super) fn is_terminal(&self) -> bool {
+        matches!(
+            *self.state.lock().unwrap(),
+            RequestState::Complete(_) | RequestState::Taken
+        )
     }
 
     pub(super) fn clone_for_render(&self) -> Self {
@@ -98,6 +106,8 @@ impl WindowPresentationFeedbackReceiver {
     }
 
     /// Consume the terminal result once it is available.
+    ///
+    /// Returns `None` while presentation is pending and after the result has already been taken.
     pub fn try_take(&mut self) -> Option<WindowPresentationFeedback> {
         let mut state = self.state.lock().unwrap();
         let RequestState::Complete(result) = *state else {
@@ -180,12 +190,16 @@ mod tests {
         let render_request = request.clone_for_render();
         assert_eq!(request.serial(), 41);
         assert_eq!(receiver.serial(), 41);
-        assert!(request.is_requested());
+        assert!(!request.is_presenting());
+        assert!(!request.is_terminal());
         assert!(render_request.begin());
         assert!(!render_request.begin());
+        assert!(render_request.is_presenting());
         assert!(receiver.try_take().is_none());
 
         render_request.complete(Ok(wgpu::PresentationFeedback::NotPresented));
+        assert!(!render_request.is_presenting());
+        assert!(render_request.is_terminal());
         let feedback = receiver.try_take().unwrap();
         assert_eq!(feedback.serial(), 41);
         assert_eq!(
@@ -193,6 +207,7 @@ mod tests {
             Ok(wgpu::PresentationFeedback::NotPresented)
         );
         assert!(receiver.try_take().is_none());
+        assert!(render_request.is_terminal());
         assert!(!request.begin());
     }
 }

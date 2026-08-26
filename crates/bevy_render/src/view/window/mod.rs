@@ -116,6 +116,8 @@ impl ExtractedWindow {
                             request,
                             surface_texture.present_with_feedback(),
                         ));
+                } else if request.is_terminal() {
+                    surface_texture.present();
                 } else {
                     bevy_log::error!(
                         "window presentation feedback request {} was not ready",
@@ -133,7 +135,7 @@ impl ExtractedWindow {
             && self
                 .presentation_feedback_request
                 .as_ref()
-                .is_none_or(WindowPresentationFeedbackRequest::is_requested)
+                .is_none_or(|request| !request.is_presenting())
     }
 }
 
