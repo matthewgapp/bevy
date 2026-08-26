@@ -28,6 +28,13 @@ enum RequestState {
 /// window entity before the corresponding scene state is extracted. The paired receiver is the
 /// only way to consume the result. After completion the component is inert and ordinary untracked
 /// frames may continue; replace it with a fresh request to track another exact presentation.
+///
+/// A request is affine and cannot be duplicated across windows:
+/// ```compile_fail
+/// use bevy_render::view::window::WindowPresentationFeedbackRequest;
+/// let (request, _receiver) = WindowPresentationFeedbackRequest::new(1);
+/// let _duplicate = request.clone();
+/// ```
 #[derive(Component, Debug)]
 pub struct WindowPresentationFeedbackRequest {
     serial: u64,
