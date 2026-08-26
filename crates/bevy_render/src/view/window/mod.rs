@@ -21,7 +21,16 @@ use wgpu::{
     SurfaceConfiguration, SurfaceTargetUnsafe, TextureFormat, TextureUsages, TextureViewDescriptor,
 };
 
+mod presentation_feedback;
 pub mod screenshot;
+
+use presentation_feedback::{
+    synchronize_presentation_feedback_request, PendingWindowPresentationFeedback,
+};
+pub use presentation_feedback::{
+    WindowPresentationFeedback, WindowPresentationFeedbackReceiver,
+    WindowPresentationFeedbackRequest,
+};
 
 use screenshot::ScreenshotPlugin;
 
@@ -38,8 +47,11 @@ impl Plugin for WindowRenderPlugin {
                 .add_systems(ExtractSchedule, extract_windows.before(extract_cameras))
                 .add_systems(
                     Render,
-                    create_surfaces
-                        .run_if(need_surface_configuration)
+                    (
+                        poll_window_presentation_feedback,
+                        create_surfaces.run_if(need_surface_configuration),
+                    )
+                        .chain()
                         .before(prepare_windows),
                 )
                 .add_systems(Render, prepare_windows.in_set(RenderSystems::PrepareViews));
@@ -72,6 +84,8 @@ pub struct ExtractedWindow {
     /// On Wayland, windows must present at least once before they are shown.
     /// See <https://wayland.app/protocols/xdg-shell#xdg_surface>
     pub needs_initial_present: bool,
+    presentation_feedback_request: Option<WindowPresentationFeedbackRequest>,
+    pending_presentation_feedback: Option<PendingWindowPresentationFeedback>,
 }
 
 impl ExtractedWindow {
@@ -97,8 +111,33 @@ impl ExtractedWindow {
             // though `present()` doesn't present the frame, it schedules it to be presented
             // by wgpu.
             // https://docs.rs/winit/0.29.9/wasm32-unknown-unknown/winit/window/struct.Window.html#method.pre_present_notify
-            surface_texture.present();
+            if let Some(request) = self.presentation_feedback_request.take() {
+                if request.begin() {
+                    self.pending_presentation_feedback =
+                        Some(PendingWindowPresentationFeedback::new(
+                            request,
+                            surface_texture.present_with_feedback(),
+                        ));
+                } else if request.is_terminal() {
+                    surface_texture.present();
+                } else {
+                    bevy_log::error!(
+                        "window presentation feedback request {} was not ready",
+                        request.serial()
+                    );
+                }
+            } else {
+                surface_texture.present();
+            }
         }
+    }
+
+    fn can_acquire(&self) -> bool {
+        self.pending_presentation_feedback.is_none()
+            && self
+                .presentation_feedback_request
+                .as_ref()
+                .is_none_or(|request| !request.is_presenting())
     }
 }
 
@@ -125,11 +164,19 @@ impl DerefMut for ExtractedWindows {
 fn extract_windows(
     mut extracted_windows: ResMut<ExtractedWindows>,
     mut closing: Extract<MessageReader<WindowClosing>>,
-    windows: Extract<Query<(Entity, &Window, &RawHandleWrapper, Option<&PrimaryWindow>)>>,
+    windows: Extract<
+        Query<(
+            Entity,
+            &Window,
+            &RawHandleWrapper,
+            Option<&PrimaryWindow>,
+            Option<&WindowPresentationFeedbackRequest>,
+        )>,
+    >,
     mut removed: Extract<RemovedComponents<RawHandleWrapper>>,
     mut window_surfaces: ResMut<WindowSurfaces>,
 ) {
-    for (entity, window, handle, primary) in windows.iter() {
+    for (entity, window, handle, primary, presentation_feedback_request) in windows.iter() {
         if primary.is_some() {
             extracted_windows.primary = Some(entity);
         }
@@ -154,6 +201,9 @@ fn extract_windows(
             present_mode_changed: false,
             alpha_mode: window.composite_alpha_mode,
             needs_initial_present: true,
+            presentation_feedback_request: presentation_feedback_request
+                .map(WindowPresentationFeedbackRequest::clone_for_render),
+            pending_presentation_feedback: None,
         });
 
         if extracted_window.swap_chain_texture.is_none() {
@@ -167,6 +217,10 @@ fn extract_windows(
             || new_height != extracted_window.physical_height;
         extracted_window.present_mode_changed =
             window.present_mode != extracted_window.present_mode;
+        synchronize_presentation_feedback_request(
+            &mut extracted_window.presentation_feedback_request,
+            presentation_feedback_request,
+        );
 
         if extracted_window.size_changed {
             debug!(
@@ -196,6 +250,18 @@ fn extract_windows(
     for removed_window in removed.read() {
         extracted_windows.remove(&removed_window);
         window_surfaces.remove(&removed_window);
+    }
+}
+
+fn poll_window_presentation_feedback(mut windows: ResMut<ExtractedWindows>) {
+    for window in windows.values_mut() {
+        if window
+            .pending_presentation_feedback
+            .as_mut()
+            .is_some_and(PendingWindowPresentationFeedback::poll)
+        {
+            window.pending_presentation_feedback = None;
+        }
     }
 }
 
@@ -249,6 +315,10 @@ pub fn prepare_windows(
     #[cfg(target_os = "linux")] render_instance: Res<RenderInstance>,
 ) {
     for window in windows.windows.values_mut() {
+        if !window.can_acquire() {
+            continue;
+        }
+
         // Skip acquiring a swap-chain texture for windows that no camera
         // targets. This avoids a wasted clear pass in
         // `handle_uncovered_swap_chains` that triggers a DMA-fence fd leak on
@@ -370,6 +440,10 @@ pub fn create_surfaces(
     render_device: Res<RenderDevice>,
 ) {
     for window in windows.windows.values_mut() {
+        if !window.can_acquire() {
+            continue;
+        }
+
         let data = window_surfaces
             .surfaces
             .entry(window.entity)
