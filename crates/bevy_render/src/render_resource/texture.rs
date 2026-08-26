@@ -77,6 +77,10 @@ impl SurfaceTexture {
     pub fn present(self) {
         self.value.into_inner().present();
     }
+
+    pub(crate) fn present_with_feedback(self) -> wgpu::PresentationFeedbackFuture {
+        self.value.into_inner().present_with_feedback()
+    }
 }
 
 impl TextureView {

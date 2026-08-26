@@ -5540,3 +5540,11 @@ name = "Light Probe Blending"
 description = "Demonstrates blending between multiple reflection probes"
 category = "3D Rendering"
 wasm = false
+
+[patch.crates-io]
+naga = { git = "https://github.com/matthewgapp/wgpu", rev = "1d68af00ca19057b8958c2412b5a9ba31b4b30cb" }
+wgpu = { git = "https://github.com/matthewgapp/wgpu", rev = "1d68af00ca19057b8958c2412b5a9ba31b4b30cb" }
+wgpu-core = { git = "https://github.com/matthewgapp/wgpu", rev = "1d68af00ca19057b8958c2412b5a9ba31b4b30cb" }
+wgpu-hal = { git = "https://github.com/matthewgapp/wgpu", rev = "1d68af00ca19057b8958c2412b5a9ba31b4b30cb" }
+wgpu-naga-bridge = { git = "https://github.com/matthewgapp/wgpu", rev = "1d68af00ca19057b8958c2412b5a9ba31b4b30cb" }
+wgpu-types = { git = "https://github.com/matthewgapp/wgpu", rev = "1d68af00ca19057b8958c2412b5a9ba31b4b30cb" }
