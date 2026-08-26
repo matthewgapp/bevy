@@ -194,15 +194,12 @@ impl PendingWindowPresentationFeedback {
     }
 
     pub(super) fn poll(&mut self) -> bool {
-        let Some(future) = self.future.as_mut() else {
+        if self.future.is_none() {
             return true;
-        };
-        let waker = Waker::noop();
-        let mut context = Context::from_waker(waker);
-        let Poll::Ready(result) = Pin::new(future).poll(&mut context) else {
+        }
+        let Some(result) = take_ready_feedback(&mut self.future) else {
             return false;
         };
-        self.future = None;
         self.request.complete(result);
         true
     }
@@ -210,11 +207,35 @@ impl PendingWindowPresentationFeedback {
 
 impl Drop for PendingWindowPresentationFeedback {
     fn drop(&mut self) {
-        if self.future.is_some() {
-            self.request
-                .complete(Err(wgpu::PresentationFeedbackError::Cancelled));
+        if let Some(result) = feedback_result_on_drop(&mut self.future) {
+            self.request.complete(result);
         }
     }
+}
+
+fn take_ready_feedback<F>(future: &mut Option<F>) -> Option<wgpu::PresentationFeedbackResult>
+where
+    F: Future<Output = wgpu::PresentationFeedbackResult> + Unpin,
+{
+    let future_ref = future.as_mut()?;
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+    let Poll::Ready(result) = Pin::new(future_ref).poll(&mut context) else {
+        return None;
+    };
+    *future = None;
+    Some(result)
+}
+
+fn feedback_result_on_drop<F>(future: &mut Option<F>) -> Option<wgpu::PresentationFeedbackResult>
+where
+    F: Future<Output = wgpu::PresentationFeedbackResult> + Unpin,
+{
+    take_ready_feedback(future).or_else(|| {
+        future
+            .is_some()
+            .then_some(Err(wgpu::PresentationFeedbackError::Cancelled))
+    })
 }
 
 #[cfg(test)]
@@ -261,5 +282,24 @@ mod tests {
             receiver.try_take().unwrap().result(),
             Err(wgpu::PresentationFeedbackError::Cancelled)
         );
+    }
+
+    #[test]
+    fn teardown_preserves_ready_feedback_and_cancels_only_pending_feedback() {
+        let mut ready = Some(core::future::ready(Ok(
+            wgpu::PresentationFeedback::NotPresented,
+        )));
+        assert_eq!(
+            feedback_result_on_drop(&mut ready),
+            Some(Ok(wgpu::PresentationFeedback::NotPresented))
+        );
+        assert!(ready.is_none());
+
+        let mut pending = Some(core::future::pending::<wgpu::PresentationFeedbackResult>());
+        assert_eq!(
+            feedback_result_on_drop(&mut pending),
+            Some(Err(wgpu::PresentationFeedbackError::Cancelled))
+        );
+        assert!(pending.is_some());
     }
 }
