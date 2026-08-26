@@ -24,7 +24,9 @@ use wgpu::{
 mod presentation_feedback;
 pub mod screenshot;
 
-use presentation_feedback::PendingWindowPresentationFeedback;
+use presentation_feedback::{
+    synchronize_presentation_feedback_request, PendingWindowPresentationFeedback,
+};
 pub use presentation_feedback::{
     WindowPresentationFeedback, WindowPresentationFeedbackReceiver,
     WindowPresentationFeedbackRequest,
@@ -215,8 +217,10 @@ fn extract_windows(
             || new_height != extracted_window.physical_height;
         extracted_window.present_mode_changed =
             window.present_mode != extracted_window.present_mode;
-        extracted_window.presentation_feedback_request =
-            presentation_feedback_request.map(WindowPresentationFeedbackRequest::clone_for_render);
+        synchronize_presentation_feedback_request(
+            &mut extracted_window.presentation_feedback_request,
+            presentation_feedback_request,
+        );
 
         if extracted_window.size_changed {
             debug!(

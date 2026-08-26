@@ -77,6 +77,17 @@ impl WindowPresentationFeedbackRequest {
         }
     }
 
+    fn same_request(&self, other: &Self) -> bool {
+        self.serial == other.serial && Arc::ptr_eq(&self.state, &other.state)
+    }
+
+    fn cancel_before_begin(&self) {
+        let mut state = self.state.lock().unwrap();
+        if *state == RequestState::Requested {
+            *state = RequestState::Complete(Err(wgpu::PresentationFeedbackError::Cancelled));
+        }
+    }
+
     pub(super) fn begin(&self) -> bool {
         let mut state = self.state.lock().unwrap();
         if *state != RequestState::Requested {
@@ -97,6 +108,25 @@ impl WindowPresentationFeedbackRequest {
             );
         }
     }
+}
+
+impl Drop for WindowPresentationFeedbackRequest {
+    fn drop(&mut self) {
+        self.cancel_before_begin();
+    }
+}
+
+pub(super) fn synchronize_presentation_feedback_request(
+    retained: &mut Option<WindowPresentationFeedbackRequest>,
+    incoming: Option<&WindowPresentationFeedbackRequest>,
+) {
+    if matches!(
+        (retained.as_ref(), incoming),
+        (Some(retained), Some(incoming)) if retained.same_request(incoming)
+    ) {
+        return;
+    }
+    *retained = incoming.map(WindowPresentationFeedbackRequest::clone_for_render);
 }
 
 /// Unique receiver for one window presentation-feedback request.
@@ -216,5 +246,20 @@ mod tests {
         assert!(receiver.try_take().is_none());
         assert!(render_request.is_terminal());
         assert!(!request.begin());
+    }
+
+    #[test]
+    fn routine_extraction_is_inert_but_removal_cancels_before_begin() {
+        let (request, mut receiver) = WindowPresentationFeedbackRequest::new(42);
+        let mut retained = Some(request.clone_for_render());
+
+        synchronize_presentation_feedback_request(&mut retained, Some(&request));
+        assert!(receiver.try_take().is_none());
+
+        synchronize_presentation_feedback_request(&mut retained, None);
+        assert_eq!(
+            receiver.try_take().unwrap().result(),
+            Err(wgpu::PresentationFeedbackError::Cancelled)
+        );
     }
 }
